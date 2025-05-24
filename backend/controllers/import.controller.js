@@ -36,7 +36,7 @@ const COLUMN_MAPPING = {
     'Total Payment': 'montant_total',
     'Commission': 'commission',
     'Currency': 'devise',
-    'Reservation Number': 'code_confirmation'
+    'Reservation Number': 'reservation_number'
   }
 };
 
@@ -58,7 +58,7 @@ const cleanNumber = (value) => {
 // Fonction pour nettoyer les dates
 const cleanDate = (value, platform) => {
   if (!value) return null;
-  
+
   const formats = {
     airbnb: ['dd/MM/yyyy', 'yyyy-MM-dd'],
     booking: ['dd/MM/yyyy', 'yyyy-MM-dd']
@@ -66,17 +66,26 @@ const cleanDate = (value, platform) => {
 
   for (const format of formats[platform] || []) {
     const parsedDate = parse(value, format, new Date());
+
+    // Vérifier validité
     if (!isNaN(parsedDate.getTime())) {
+      // Remettre l'heure à 00:00:00 locale pour éviter le décalage
+      parsedDate.setHours(0, 0, 0, 0);
       return parsedDate;
     }
   }
-  
+
   return null;
 };
 
 // Nettoyer et formater les données
 const cleanReservationData = (data, platform) => {
   const cleaned = {};
+
+
+
+  console.log("Raw data:", data);
+
   const mapping = COLUMN_MAPPING[platform];
   
   // Mapper les colonnes
@@ -98,6 +107,8 @@ const cleanReservationData = (data, platform) => {
     cleaned.montant_total = cleanNumber(cleaned.montant_total);
   }
 
+
+  console.log(cleaned.date_arrivee)
   // Nettoyer les dates
   cleaned.date_arrivee = cleanDate(cleaned.date_arrivee, platform);
   cleaned.date_depart = cleanDate(cleaned.date_depart, platform);
@@ -107,43 +118,35 @@ const cleanReservationData = (data, platform) => {
 };
 
 // Importer un fichier
+// 🔧 Fonction import corrigée
 exports.importFile = async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ 
-      success: false, 
-      message: 'Aucun fichier téléchargé' 
-    });
+  const file = req.file;
+  if (!file) {
+    return res.status(400).json({ success: false, message: 'Aucun fichier fourni' });
   }
 
-  const filePath = req.file.path;
-  const platform = detectPlatform(req.file.originalname);
-  
+  const platform = detectPlatform(file.originalname);
+  const fileExt = path.extname(file.originalname).toLowerCase();
+  const filePath = file.path;
+
   if (!platform) {
     fs.unlinkSync(filePath);
-    return res.status(400).json({ 
-      success: false, 
-      message: 'Impossible de déterminer la plateforme. Le nom du fichier doit contenir "airbnb" ou "booking"' 
+    return res.status(400).json({
+      success: false,
+      message: 'Nom de fichier invalide (doit contenir airbnb ou booking)'
     });
   }
 
   try {
-    // Lire le fichier
-    const fileExt = path.extname(req.file.originalname).toLowerCase();
     let rows = [];
-
     if (fileExt === '.csv') {
       rows = await parseCSV(filePath);
-    } else if (fileExt === '.xlsx' || fileExt === '.xls') {
+    } else if (['.xlsx', '.xls'].includes(fileExt)) {
       rows = await parseXLSX(filePath);
     } else {
       throw new Error('Format de fichier non supporté');
     }
 
-    if (rows.length === 0) {
-      throw new Error('Le fichier est vide');
-    }
-
-    // Traitement des données
     const results = {
       total: 0,
       inserted: 0,
@@ -152,49 +155,33 @@ exports.importFile = async (req, res) => {
       errors: []
     };
 
-    for (const [index, row] of rows.entries()) {
+    for (const [i, row] of rows.entries()) {
       try {
-        // Nettoyer les données
-        const cleanedData = cleanReservationData(row, platform);
-        
-        // Vérifier les données obligatoires
-        if (!cleanedData.nom_logement || !cleanedData.code_confirmation || 
-            !cleanedData.date_arrivee || !cleanedData.date_depart) {
-          throw new Error('Données obligatoires manquantes');
-        }
+        const data = cleanReservationData(row, platform);
 
-        // Chercher ou créer le logement
+
+
         const [logement] = await Logement.findOrCreate({
-          where: { 
-            nom_logement: cleanedData.nom_logement,
-            plateforme: platform
-          },
-          defaults: {
-            nom_logement: cleanedData.nom_logement,
-            plateforme: platform
-          }
+          where: { nom_logement: data.nom_logement, plateforme: platform },
+          defaults: { nom_logement: data.nom_logement, plateforme: platform }
         });
 
-        // Préparer les données de la réservation
         const reservationData = {
-          ...cleanedData,
-          source_plateforme: platform,
+          ...data,
           logement_id: logement.id,
-          fichier_source: req.file.originalname,
+          fichier_source: file.originalname,
+          source_plateforme: platform,
           date_import: new Date()
         };
 
-        // Vérifier si la réservation existe déjà
         const [reservation, created] = await Reservation.findOrCreate({
-          where: { 
-            code_confirmation: cleanedData.code_confirmation,
+          where: {
             source_plateforme: platform
           },
           defaults: reservationData
         });
 
         if (!created) {
-          // Mettre à jour la réservation existante
           await reservation.update(reservationData);
           results.updated++;
         } else {
@@ -203,35 +190,26 @@ exports.importFile = async (req, res) => {
 
         results.total++;
 
-      } catch (error) {
+      } catch (err) {
         results.skipped++;
         results.errors.push({
-          row: index + 2, // +2 pour l'en-tête et l'index 0
-          error: error.message,
+          row: i + 2,
+          error: err.message,
           data: JSON.stringify(row)
         });
       }
     }
 
-    // Supprimer le fichier après traitement
     fs.unlinkSync(filePath);
+    res.json({ success: true, message: 'Import terminé', results });
 
-    // Réponse
-    res.json({
-      success: true,
-      message: 'Import terminé avec succès',
-      results
-    });
-
-  } catch (error) {
-    console.error('Erreur lors de l\'importation:', error);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-    res.status(500).json({ 
-      success: false, 
-      message: 'Erreur lors de l\'importation',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+  } catch (err) {
+    console.error('Erreur d\'importation :', err);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
   }
 };

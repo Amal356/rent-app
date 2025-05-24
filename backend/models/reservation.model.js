@@ -3,10 +3,11 @@ const { DataTypes } = require('sequelize');
 module.exports = (sequelize) => {
   const Reservation = sequelize.define('Reservation', {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-    code_confirmation: { type: DataTypes.STRING(100), allowNull: false },
+    code_confirmation: { type: DataTypes.STRING(100), allowNull: true },
     nom_client: { type: DataTypes.STRING(255), allowNull: true },
     contact: { type: DataTypes.STRING(255), allowNull: true },
     nb_adultes: { type: DataTypes.INTEGER, allowNull: true },
+    reservation_number: { type: DataTypes.BIGINT, allowNull: true },
     nb_enfants: { type: DataTypes.INTEGER, allowNull: true },
     nb_bebes: { type: DataTypes.INTEGER, allowNull: true },
     date_arrivee: { type: DataTypes.DATEONLY, allowNull: false },
